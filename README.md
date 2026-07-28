@@ -14,9 +14,18 @@ bin/toolkit --yes                    # non-interactive, use defaults (all tools/
 bin/toolkit --tools=claude --agents=dev,reviewer --skills=pr-review
 ```
 
-Re-running with no flags updates an existing install in place, reusing its prior selection. A checksum is recorded per generated file; if you've hand-edited one locally, the next update leaves it alone and warns instead of overwriting it.
+Re-running with no flags updates an existing install in place, reusing its prior selection. A checksum is recorded per generated file, tracked against both the rendered output and the org source it came from — if you've hand-edited a file locally, the next update leaves it alone. If the org source for that same file *also* changed upstream, it's reported as a conflict needing a manual merge rather than a plain preserved edit, so you're not stuck comparing hashes by hand to tell the two apart.
 
 Requires Node.js (no npm install needed — `bin/toolkit` has zero dependencies).
+
+## Inspecting a repo without installing
+
+```
+bin/toolkit scan                     # human-readable summary of the current directory
+bin/toolkit scan --target=../other-repo --json
+```
+
+Reports detected stack(s), test tooling, CI, CODEOWNERS, and any existing toolkit install per CLI, all from deterministic filesystem checks — no LLM judgment involved. This is what the `repo-init` agent shells out to instead of re-deriving repo state via ad hoc search on every run.
 
 ## Layout
 
@@ -27,7 +36,7 @@ global/                 neutral source content — org-owned, edit here
   instructions/core.md   baseline instructions assembled into copilot-instructions.md / CLAUDE.md / GEMINI.md
 lib/                     bin/toolkit's implementation
   writers/{copilot,claude,gemini}.js   per-target adapters (path + frontmatter mapping)
-  manifest.js, source.js
+  manifest.js, source.js, scan.js
 bin/toolkit              the install/update entrypoint
 user/                    personal scratch/override space for people developing this repo (see user/README.md)
 manifest.json, VERSION   this toolkit's own version/contents metadata

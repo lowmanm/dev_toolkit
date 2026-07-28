@@ -8,6 +8,7 @@ const readline = require('readline');
 
 const manifestLib = require('../lib/manifest');
 const source = require('../lib/source');
+const scanLib = require('../lib/scan');
 const writers = {
   copilot: require('../lib/writers/copilot'),
   claude: require('../lib/writers/claude'),
@@ -24,6 +25,7 @@ function printHelp() {
 
 Usage:
   bin/toolkit [options]
+  bin/toolkit scan [--target=<path>] [--json]
 
 Options:
   --scope=user|workspace   Where to install. user = this PC (~/.copilot, ~/.claude, ~/.gemini),
@@ -37,7 +39,24 @@ Options:
 
 Re-running with no flags updates an existing install in place, reusing its
 prior selection. Files you've hand-edited locally are detected via checksum
-and left untouched (with a warning) rather than being overwritten.`);
+and left untouched (with a warning) rather than being overwritten. If the
+org source for that same file also changed upstream, it's reported as a
+conflict needing a manual merge rather than a plain preserved edit.
+
+"scan" inspects a repo (stack, test tooling, CI, existing toolkit installs)
+without writing anything. It's what the repo-init agent shells out to
+instead of re-deriving repo state via ad hoc search each run.`);
+}
+
+function printScanHelp() {
+  console.log(`toolkit scan - inspect a repo without installing anything
+
+Usage:
+  bin/toolkit scan [--target=<path>] [--json]
+
+Options:
+  --target=<path>   Repo to scan (default: current directory).
+  --json            Print raw JSON instead of a human-readable summary.`);
 }
 
 function parseArgs(argv) {
@@ -67,10 +86,66 @@ async function askDefault(rl, question, def) {
   return answer || def;
 }
 
+function runScan(argv) {
+  let target = process.cwd();
+  let json = false;
+  for (const raw of argv) {
+    if (raw.startsWith('--target=')) target = raw.slice('--target='.length);
+    else if (raw === '--json') json = true;
+    else if (raw === '--help' || raw === '-h') {
+      printScanHelp();
+      return;
+    } else {
+      console.error(`Unrecognized argument: ${raw}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  const root = path.resolve(target);
+  const result = scanLib.scan(root);
+
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(`Scan of ${root}\n`);
+
+  if (result.toolkit.manifest) {
+    const m = result.toolkit.manifest;
+    console.log(`Toolkit already installed: v${m.toolkitVersion} (${m.scope} scope), last updated ${m.updatedAt}`);
+    console.log(`  selection: tools=${m.selection.tools.join(',')} agents=${m.selection.agents.join(',')} skills=${m.selection.skills.join(',')}`);
+    console.log('  -> this is an update, not a first install. Run "bin/toolkit" directly.\n');
+  } else {
+    console.log('No .devtoolkit/manifest.json found - this looks like a first install.\n');
+  }
+
+  for (const [tool, info] of Object.entries(result.toolkit.installed)) {
+    if (info.present) {
+      console.log(
+        `${tool}: existing files found (agents: ${info.agents.length}, skills: ${info.skills.length}, instructions: ${info.hasInstructions ? 'yes' : 'no'}) - likely in use.`
+      );
+    }
+  }
+
+  console.log(`\nDetected stack(s): ${result.stacks.length ? result.stacks.join(', ') : 'none detected'}`);
+  console.log(
+    `Test tooling: ${result.testing.hasTestTooling ? 'detected' : 'none detected'}` +
+      (result.testing.configSignals.length ? ` (${result.testing.configSignals.join(', ')})` : '') +
+      (result.testing.packageTestScript ? ` (package.json test script: "${result.testing.packageTestScript}")` : '')
+  );
+  console.log(`CI: ${result.ci.present ? `detected (${result.ci.signals.join(', ')})` : 'none detected'}`);
+  console.log(`CODEOWNERS: ${result.codeowners ? 'present' : 'not found'}`);
+}
+
 // Writes `content` to `filePath`, respecting manifest-recorded checksums so a
-// locally hand-edited file is never silently clobbered.
-function writeTracked(filePath, content, manifestFiles, previousManifestFiles, report) {
-  const hash = manifestLib.sha256(content);
+// locally hand-edited file is never silently clobbered. Distinguishes a
+// harmless local edit (source unchanged upstream) from a real conflict
+// (local edit AND the org source moved), so updates never silently drop
+// either side.
+function writeTracked(filePath, content, sourceHash, manifestFiles, previousManifestFiles, report) {
+  const outputHash = manifestLib.sha256(content);
   const prior = previousManifestFiles && previousManifestFiles[filePath];
   const existsOnDisk = fs.existsSync(filePath);
 
@@ -78,8 +153,9 @@ function writeTracked(filePath, content, manifestFiles, previousManifestFiles, r
     const onDisk = fs.readFileSync(filePath, 'utf8');
     const onDiskHash = manifestLib.sha256(onDisk);
     if (prior && onDiskHash !== prior.outputHash) {
-      report.skippedLocalEdits.push(filePath);
-      manifestFiles[filePath] = prior; // keep tracking the old (edited) state
+      const sourceChanged = prior.sourceHash !== sourceHash;
+      report[sourceChanged ? 'conflicts' : 'localEditsPreserved'].push(filePath);
+      manifestFiles[filePath] = prior; // keep tracking the last-known-synced state
       return;
     }
     if (!prior) {
@@ -87,20 +163,26 @@ function writeTracked(filePath, content, manifestFiles, previousManifestFiles, r
       report.skippedForeign.push(filePath);
       return;
     }
-    if (onDiskHash === hash) {
-      manifestFiles[filePath] = { outputHash: hash };
+    if (onDiskHash === outputHash) {
+      manifestFiles[filePath] = { outputHash, sourceHash };
       return; // already up to date
     }
   }
 
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content);
-  manifestFiles[filePath] = { outputHash: hash };
+  manifestFiles[filePath] = { outputHash, sourceHash };
   report[existsOnDisk ? 'updated' : 'created'].push(filePath);
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const rawArgv = process.argv.slice(2);
+  if (rawArgv[0] === 'scan') {
+    runScan(rawArgv.slice(1));
+    return;
+  }
+
+  const args = parseArgs(rawArgv);
   if (args.help) {
     printHelp();
     return;
@@ -166,25 +248,26 @@ async function main() {
   const selectedAgents = agentsSource.filter((a) => agentIds.includes(a.id));
   const selectedSkills = skillsSource.filter((s) => skillIds.includes(s.id));
 
-  const report = { created: [], updated: [], skippedLocalEdits: [], skippedForeign: [] };
+  const report = { created: [], updated: [], conflicts: [], localEditsPreserved: [], skippedForeign: [] };
   const manifestFiles = {};
   const previousFiles = previousManifest ? previousManifest.files : {};
+  const instructionsSourceHash = manifestLib.sha256(instructionsBody);
 
   for (const toolId of tools) {
     const writer = writers[toolId];
 
     for (const agent of selectedAgents) {
       const filePath = writer.agentPath(root, scope, agent.id);
-      writeTracked(filePath, writer.renderAgent(agent), manifestFiles, previousFiles, report);
+      writeTracked(filePath, writer.renderAgent(agent), manifestLib.sha256(agent.raw), manifestFiles, previousFiles, report);
     }
 
     for (const skill of selectedSkills) {
       const filePath = writer.skillPath(root, scope, skill.id);
-      writeTracked(filePath, writer.renderSkill(skill), manifestFiles, previousFiles, report);
+      writeTracked(filePath, writer.renderSkill(skill), manifestLib.sha256(skill.raw), manifestFiles, previousFiles, report);
     }
 
     const instrPath = writer.instructionsPath(root, scope);
-    writeTracked(instrPath, writer.renderInstructions(instructionsBody), manifestFiles, previousFiles, report);
+    writeTracked(instrPath, writer.renderInstructions(instructionsBody), instructionsSourceHash, manifestFiles, previousFiles, report);
   }
 
   manifestLib.save(root, {
@@ -201,9 +284,13 @@ async function main() {
   console.log(`  agents: ${agentIds.join(', ')}`);
   console.log(`  skills: ${skillIds.join(', ')}`);
   console.log(`  created: ${report.created.length}, updated: ${report.updated.length}`);
-  if (report.skippedLocalEdits.length) {
-    console.log(`\nSkipped ${report.skippedLocalEdits.length} file(s) with local edits (left untouched):`);
-    for (const f of report.skippedLocalEdits) console.log(`  - ${f}`);
+  if (report.conflicts.length) {
+    console.log(`\n${report.conflicts.length} CONFLICT(S) - edited locally AND the org source changed upstream. Manual merge needed:`);
+    for (const f of report.conflicts) console.log(`  - ${f}`);
+  }
+  if (report.localEditsPreserved.length) {
+    console.log(`\n${report.localEditsPreserved.length} local edit(s) preserved (org source unchanged, nothing lost):`);
+    for (const f of report.localEditsPreserved) console.log(`  - ${f}`);
   }
   if (report.skippedForeign.length) {
     console.log(`\nSkipped ${report.skippedForeign.length} pre-existing file(s) not managed by this toolkit:`);
