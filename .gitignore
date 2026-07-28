@@ -1,0 +1,6 @@
+node_modules/
+.DS_Store
+
+# Personal scratch space (see user/README.md) — keep the README, ignore everything else.
+/user/*
+!/user/README.md

@@ -1,0 +1,217 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const readline = require('readline');
+
+const manifestLib = require('../lib/manifest');
+const source = require('../lib/source');
+const writers = {
+  copilot: require('../lib/writers/copilot'),
+  claude: require('../lib/writers/claude'),
+  gemini: require('../lib/writers/gemini'),
+};
+
+const TOOLKIT_ROOT = path.join(__dirname, '..');
+const GLOBAL_DIR = path.join(TOOLKIT_ROOT, 'global');
+const ALL_TOOLS = Object.keys(writers);
+const TOOLKIT_VERSION = fs.readFileSync(path.join(TOOLKIT_ROOT, 'VERSION'), 'utf8').trim();
+
+function printHelp() {
+  console.log(`toolkit - install or update the org dev toolkit
+
+Usage:
+  bin/toolkit [options]
+
+Options:
+  --scope=user|workspace   Where to install. user = this PC (~/.copilot, ~/.claude, ~/.gemini),
+                           available in every project. workspace = the current project only.
+  --target=<path>          Project root for workspace scope (default: current directory).
+  --tools=a,b,c            Target CLIs to generate for (default: ${ALL_TOOLS.join(',')}).
+  --agents=a,b,c           Agents to install (default: all).
+  --skills=a,b,c           Skills to install (default: all).
+  --yes, -y                Non-interactive: use flags/defaults, skip prompts.
+  --help, -h               Show this help.
+
+Re-running with no flags updates an existing install in place, reusing its
+prior selection. Files you've hand-edited locally are detected via checksum
+and left untouched (with a warning) rather than being overwritten.`);
+}
+
+function parseArgs(argv) {
+  const args = { tools: null, agents: null, skills: null, scope: null, target: null, yes: false, help: false };
+  for (const raw of argv) {
+    if (raw === '--help' || raw === '-h') args.help = true;
+    else if (raw === '--yes' || raw === '-y') args.yes = true;
+    else if (raw.startsWith('--scope=')) args.scope = raw.slice('--scope='.length);
+    else if (raw.startsWith('--target=')) args.target = raw.slice('--target='.length);
+    else if (raw.startsWith('--tools=')) args.tools = splitList(raw.slice('--tools='.length));
+    else if (raw.startsWith('--agents=')) args.agents = splitList(raw.slice('--agents='.length));
+    else if (raw.startsWith('--skills=')) args.skills = splitList(raw.slice('--skills='.length));
+    else {
+      console.error(`Unrecognized argument: ${raw}`);
+      process.exit(1);
+    }
+  }
+  return args;
+}
+
+function splitList(s) {
+  return s.split(',').map((x) => x.trim()).filter(Boolean);
+}
+
+async function askDefault(rl, question, def) {
+  const answer = (await rl.question(`${question} [${def}]: `)).trim();
+  return answer || def;
+}
+
+// Writes `content` to `filePath`, respecting manifest-recorded checksums so a
+// locally hand-edited file is never silently clobbered.
+function writeTracked(filePath, content, manifestFiles, previousManifestFiles, report) {
+  const hash = manifestLib.sha256(content);
+  const prior = previousManifestFiles && previousManifestFiles[filePath];
+  const existsOnDisk = fs.existsSync(filePath);
+
+  if (existsOnDisk) {
+    const onDisk = fs.readFileSync(filePath, 'utf8');
+    const onDiskHash = manifestLib.sha256(onDisk);
+    if (prior && onDiskHash !== prior.outputHash) {
+      report.skippedLocalEdits.push(filePath);
+      manifestFiles[filePath] = prior; // keep tracking the old (edited) state
+      return;
+    }
+    if (!prior) {
+      // File exists but the toolkit never wrote it (foreign file) — don't overwrite.
+      report.skippedForeign.push(filePath);
+      return;
+    }
+    if (onDiskHash === hash) {
+      manifestFiles[filePath] = { outputHash: hash };
+      return; // already up to date
+    }
+  }
+
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, content);
+  manifestFiles[filePath] = { outputHash: hash };
+  report[existsOnDisk ? 'updated' : 'created'].push(filePath);
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  if (args.help) {
+    printHelp();
+    return;
+  }
+
+  const agentsSource = source.loadAgents(GLOBAL_DIR);
+  const skillsSource = source.loadSkills(GLOBAL_DIR);
+  const instructionsBody = source.loadInstructions(GLOBAL_DIR);
+
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY) && !args.yes;
+  const rl = interactive ? readline.createInterface({ input: process.stdin, output: process.stdout }) : null;
+
+  let scope = args.scope;
+  if (!scope && interactive) {
+    const answer = await askDefault(
+      rl,
+      'Install scope? "user" = this PC, available in every project. "workspace" = current project only',
+      'workspace'
+    );
+    scope = answer.toLowerCase().startsWith('u') ? 'user' : 'workspace';
+  }
+  scope = scope || 'workspace';
+  if (scope !== 'user' && scope !== 'workspace') {
+    console.error(`Unknown scope "${scope}". Expected "user" or "workspace".`);
+    process.exitCode = 1;
+    if (rl) rl.close();
+    return;
+  }
+
+  const root = scope === 'user' ? os.homedir() : path.resolve(args.target || process.cwd());
+  const previousManifest = manifestLib.load(root);
+  const mode = previousManifest ? 'update' : 'install';
+
+  const defaults = {
+    tools: (previousManifest && previousManifest.selection.tools) || ALL_TOOLS,
+    agents: (previousManifest && previousManifest.selection.agents) || agentsSource.map((a) => a.id),
+    skills: (previousManifest && previousManifest.selection.skills) || skillsSource.map((s) => s.id),
+  };
+
+  let tools = args.tools || defaults.tools;
+  let agentIds = args.agents || defaults.agents;
+  let skillIds = args.skills || defaults.skills;
+
+  if (interactive && mode === 'install' && !args.tools && !args.agents && !args.skills) {
+    tools = splitList(await askDefault(rl, `Target CLIs (${ALL_TOOLS.join(',')})`, tools.join(',')));
+    agentIds = splitList(
+      await askDefault(rl, `Agents (${agentsSource.map((a) => a.id).join(',')})`, agentIds.join(','))
+    );
+    skillIds = splitList(
+      await askDefault(rl, `Skills (${skillsSource.map((s) => s.id).join(',')})`, skillIds.join(','))
+    );
+  }
+  if (rl) rl.close();
+
+  for (const t of tools) {
+    if (!writers[t]) {
+      console.error(`Unknown tool "${t}". Expected one of: ${ALL_TOOLS.join(', ')}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  const selectedAgents = agentsSource.filter((a) => agentIds.includes(a.id));
+  const selectedSkills = skillsSource.filter((s) => skillIds.includes(s.id));
+
+  const report = { created: [], updated: [], skippedLocalEdits: [], skippedForeign: [] };
+  const manifestFiles = {};
+  const previousFiles = previousManifest ? previousManifest.files : {};
+
+  for (const toolId of tools) {
+    const writer = writers[toolId];
+
+    for (const agent of selectedAgents) {
+      const filePath = writer.agentPath(root, scope, agent.id);
+      writeTracked(filePath, writer.renderAgent(agent), manifestFiles, previousFiles, report);
+    }
+
+    for (const skill of selectedSkills) {
+      const filePath = writer.skillPath(root, scope, skill.id);
+      writeTracked(filePath, writer.renderSkill(skill), manifestFiles, previousFiles, report);
+    }
+
+    const instrPath = writer.instructionsPath(root, scope);
+    writeTracked(instrPath, writer.renderInstructions(instructionsBody), manifestFiles, previousFiles, report);
+  }
+
+  manifestLib.save(root, {
+    toolkitVersion: TOOLKIT_VERSION,
+    scope,
+    installedAt: (previousManifest && previousManifest.installedAt) || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    selection: { tools, agents: agentIds, skills: skillIds },
+    files: manifestFiles,
+  });
+
+  console.log(`\n${mode === 'install' ? 'Installed' : 'Updated'} dev_toolkit v${TOOLKIT_VERSION} (${scope} scope) at ${root}`);
+  console.log(`  tools:  ${tools.join(', ')}`);
+  console.log(`  agents: ${agentIds.join(', ')}`);
+  console.log(`  skills: ${skillIds.join(', ')}`);
+  console.log(`  created: ${report.created.length}, updated: ${report.updated.length}`);
+  if (report.skippedLocalEdits.length) {
+    console.log(`\nSkipped ${report.skippedLocalEdits.length} file(s) with local edits (left untouched):`);
+    for (const f of report.skippedLocalEdits) console.log(`  - ${f}`);
+  }
+  if (report.skippedForeign.length) {
+    console.log(`\nSkipped ${report.skippedForeign.length} pre-existing file(s) not managed by this toolkit:`);
+    for (const f of report.skippedForeign) console.log(`  - ${f}`);
+  }
+}
+
+main().catch((err) => {
+  console.error(err.stack || String(err));
+  process.exitCode = 1;
+});

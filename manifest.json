@@ -1,0 +1,23 @@
+{
+  "name": "dev_toolkit",
+  "version": "0.1.0",
+  "installManifestSchema": 1,
+  "scopeSemantics": {
+    "user": "Installs to the invoking user's home directory (~/.copilot, ~/.claude, ~/.gemini). Available across every project on that machine. Never committed to any repo.",
+    "workspace": "Installs into the current project/repo root (.github, .claude, .gemini). Committed to git, shared with the team."
+  },
+  "contents": {
+    "agents": ["dev", "reviewer", "tester", "repo-init"],
+    "skills": [
+      "dev-scaffolding",
+      "dev-environment-setup",
+      "pr-review",
+      "testing-unit",
+      "testing-integration",
+      "sdlc-request-review",
+      "sdlc-new-app"
+    ],
+    "targets": ["copilot", "claude", "gemini"]
+  },
+  "outOfScope": ["security", "sre", "architecture", "pm"]
+}
