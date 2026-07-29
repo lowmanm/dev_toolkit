@@ -4,20 +4,35 @@ The org's internal dev toolkit: agents, skills, and instructions for **developme
 
 ## Quick start
 
-Clone the toolkit, then run it from inside whichever project you want it in:
+### Option A: run it directly, no local clone to manage
 
 ```
-git clone https://github.com/lowmanm/dev_toolkit.git
+npx github:<org>/dev_toolkit
+```
+
+(replace `<org>/dev_toolkit` with wherever this repo actually lives). `npx` fetches it and runs `bin/toolkit` on the spot — nothing persists locally afterward. It still needs `git` access to that repo under the hood (same permissions a manual clone would need), it just skips you having to manage a local copy or remember to `git pull` before re-running.
+
+Flags work the same way, appended after the package reference:
+
+```
+npx github:<org>/dev_toolkit --scope=workspace --yes
+```
+
+### Option B: clone it locally
+
+Useful if you want to inspect the source, or `npx` fetching from git isn't available on your network:
+
+```
+git clone <repo-url>
 cd dev_toolkit
-```
-
-```
 ./bin/toolkit
 ```
 
-Running it with no flags asks you two things: scope (this PC vs. just this project) and which agents/skills/CLIs to include, defaulting to all. Answer the prompts, or use the non-interactive commands below.
+Either way, running it with no flags asks you two things: scope (this PC vs. just this project) and which agents/skills/CLIs to include, defaulting to all. Answer the prompts, or use the non-interactive commands below.
 
-> Requires Node.js. No `npm install` needed — `./bin/toolkit` runs as-is. On Windows, use `node bin/toolkit` instead of `./bin/toolkit`.
+> Requires Node.js. No `npm install` needed — `bin/toolkit` runs as-is (zero runtime dependencies, which is also what makes the `npx` option above work without an install step). On Windows with a local clone, use `node bin/toolkit` instead of `./bin/toolkit`.
+
+The rest of this README shows commands as `./bin/toolkit ...` for brevity — swap in `npx github:<org>/dev_toolkit ...` if you're using Option A instead of a local clone.
 
 ## Installing into your current project
 
