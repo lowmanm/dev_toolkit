@@ -7,7 +7,7 @@
     "workspace": "Installs into the current project/repo root (.github, .claude, .gemini). Committed to git, shared with the team."
   },
   "contents": {
-    "agents": ["dev", "reviewer", "tester", "repo-init"],
+    "agents": ["dev", "reviewer", "tester", "repo-init", "principles"],
     "skills": [
       "dev-scaffolding",
       "dev-environment-setup",
@@ -15,9 +15,14 @@
       "testing-unit",
       "testing-integration",
       "sdlc-request-review",
-      "sdlc-new-app"
+      "sdlc-new-app",
+      "principles-maintenance"
     ],
-    "targets": ["copilot", "claude", "gemini"]
+    "targets": ["copilot", "claude", "gemini"],
+    "principlesTemplates": ["architecture", "design", "domain"]
   },
-  "outOfScope": ["security", "sre", "architecture", "pm"]
+  "outOfScope": ["security", "sre", "architecture-governance", "pm"],
+  "notes": {
+    "principles": "principles/*.md is per-repo generated content, not manifest-tracked like agents/skills/instructions - see CONTRIBUTING.md."
+  }
 }

@@ -6,16 +6,18 @@ This is for people working on the toolkit itself — adding or editing agents/sk
 
 ```
 global/                 neutral source content — the org-owned source of truth, edit here
-  agents/*.agent.md      dev, reviewer, tester, repo-init
-  skills/<name>/SKILL.md pr-review, testing-*, dev-*, sdlc-* (Agent Skills format — shared verbatim across all three targets)
+  agents/*.agent.md      dev, reviewer, tester, repo-init, principles
+  skills/<name>/SKILL.md pr-review, testing-*, dev-*, sdlc-*, principles-maintenance (Agent Skills format — shared verbatim across all three targets)
   instructions/core.md   baseline instructions, assembled into copilot-instructions.md / CLAUDE.md / GEMINI.md
+  principles-templates/  placeholder architecture.md/design.md/domain.md, copied into a target repo's principles/ when it has no substantial code yet
 lib/
   source.js              loads and parses global/ content (frontmatter + body)
   writers/{copilot,claude,gemini}.js   per-target adapters: file paths + frontmatter/body rendering
   manifest.js            checksum helpers, install-manifest read/write
   install.js             writeTracked() — the checksum/conflict decision logic, pruneEmptyDirs()
   cli.js                 argument parsing
-  scan.js                deterministic repo inspection (used by `bin/toolkit scan` and the repo-init agent)
+  scan.js                deterministic repo inspection (used by `bin/toolkit scan` and the repo-init agent) — including the hasSubstantialCode signal
+  principles.js          loadTemplates()/scaffold() — mechanical placeholder-writer for principles/, deliberately outside the manifest system
 bin/toolkit              the CLI entrypoint — thin orchestration over lib/, no logic of its own beyond wiring
 test/                    node:test suite — unit tests per lib/ module, plus end-to-end subprocess tests
 .github/workflows/ci.yml runs syntax checks + the test suite on push/PR
@@ -27,7 +29,7 @@ manifest.json, VERSION   this toolkit's own version/contents metadata (distinct 
 
 ## v1 scope — stay inside it
 
-Only four skill areas exist: `dev`, `pr-review`, `testing`, `sdlc`. Do not add security, SRE, architecture, or PM/Jira/Confluence content — that's explicitly deferred to a later version. If you're not sure whether something fits, ask before adding it rather than stretching one of the existing four areas to cover it.
+Only four skill areas exist: `dev`, `pr-review`, `testing`, `sdlc` — plus the cross-cutting `principles` mechanism (not a fifth skill area, it doesn't carry org policy content the way the other four do). Do not add security, SRE, architecture governance, or PM/Jira/Confluence content — that's explicitly deferred to a later version. If you're not sure whether something fits, ask before adding it rather than stretching one of the existing areas to cover it. Note the naming collision to watch for: `principles/architecture.md` documents a *target repo's own* system design and is in scope; "architecture" as an org-wide governance skill area is not.
 
 ## Adding a new skill
 
@@ -79,6 +81,17 @@ On a later run, `writeTracked()` (`lib/install.js`) compares the file currently 
 | yes | yes | leave it — reported as a **conflict** needing manual merge |
 
 If you touch this logic, the test matrix in `test/install.test.js` covers exactly these four cases plus the "foreign file with no manifest entry" case (a file exists but the toolkit never wrote it — never overwritten, reported separately) — extend it rather than replacing it.
+
+## Principles: a deliberately different content model
+
+Everything above (`agents/`, `skills/`, `instructions/core.md`) is org-authored content: one source of truth in `global/`, fanned out identically to every install, with the manifest protecting it from being silently overwritten. `principles/*.md` is the opposite shape — it's *repo-specific* content with no org-wide source to diff against, since two different repos should end up with completely different `principles/architecture.md`.
+
+That's why `lib/principles.js` exists separately from `lib/install.js` and never touches `.devtoolkit/manifest.json`:
+
+- `bin/toolkit scaffold-principles` (`principlesLib.scaffold()`) only ever writes the generic placeholder templates from `global/principles-templates/`, and only when the target file doesn't already exist (or `--force` is passed) — it has no way to generate real content, since `bin/toolkit` has no model access.
+- Deriving *real* principles content requires actually reading and reasoning about a codebase, which is why that's the `principles` agent's job, not something scriptable in `lib/`.
+- Because there's no manifest entry, `update`/`status`/`uninstall` never touch `principles/*.md` at all — confirmed by the uninstall test in `test/integration.test.js`. If you're tempted to add principles to the manifest for consistency, don't — it would reintroduce the "which version is authoritative" problem this design avoids, since there's no upstream source for a per-repo document to be "in conflict" with.
+- The "is there enough code to derive from, or should we scaffold placeholders" decision is the `code.hasSubstantialCode` heuristic in `lib/scan.js` — see its threshold constants if you need to tune it. It's intentionally rough (file count + line count, common source extensions only, excluding lockfiles/build output) rather than a real static-analysis pass.
 
 ## Testing
 

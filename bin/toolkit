@@ -11,6 +11,7 @@ const source = require('../lib/source');
 const scanLib = require('../lib/scan');
 const cli = require('../lib/cli');
 const installLib = require('../lib/install');
+const principlesLib = require('../lib/principles');
 const writers = {
   copilot: require('../lib/writers/copilot'),
   claude: require('../lib/writers/claude'),
@@ -26,10 +27,11 @@ function printHelp() {
   console.log(`toolkit - install or update the org dev toolkit
 
 Usage:
-  bin/toolkit [options]                          install or update
-  bin/toolkit status [--scope=] [--target=]       show current install state without changing anything
-  bin/toolkit scan [--target=] [--json]           inspect a repo without installing anything
-  bin/toolkit uninstall [--scope=] [--target=]    remove a previous install
+  bin/toolkit [options]                              install or update
+  bin/toolkit status [--scope=] [--target=]           show current install state without changing anything
+  bin/toolkit scan [--target=] [--json]               inspect a repo without installing anything
+  bin/toolkit uninstall [--scope=] [--target=]        remove a previous install
+  bin/toolkit scaffold-principles [--target=] [--force]   scaffold placeholder principles/*.md
 
 Options:
   --scope=user|workspace   Where to install. user = this PC (~/.copilot, ~/.claude, ~/.gemini),
@@ -46,7 +48,12 @@ Re-running with no flags updates an existing install in place, reusing its
 prior selection. Files you've hand-edited locally are detected via checksum
 and left untouched. If the org source for that same file also changed
 upstream, it's reported as a conflict needing a manual merge rather than a
-plain preserved edit.`);
+plain preserved edit.
+
+"scaffold-principles" writes placeholder principles/*.md files (architecture,
+design, business domain) for a repo without much code yet. principles/ is
+not manifest-tracked - it's repo-owned content the dev/reviewer agents keep
+current as the codebase evolves, not synced from this toolkit's org content.`);
 }
 
 function printScanHelp() {
@@ -79,6 +86,21 @@ Usage:
 Deletes only files that still match what the toolkit last generated. Files
 you've hand-edited locally are left in place and reported, not deleted.
 Always removes the install manifest itself at the end.`);
+}
+
+function printScaffoldPrinciplesHelp() {
+  console.log(`toolkit scaffold-principles - write placeholder principles/*.md files
+
+Usage:
+  bin/toolkit scaffold-principles [--target=<path>] [--force]
+
+Options:
+  --target=<path>   Repo to scaffold into (default: current directory).
+  --force           Overwrite existing principles/*.md files too (normally skipped).
+
+For repos with substantial existing code, prefer running the "principles"
+agent instead - it reads the codebase and derives real content. This command
+only ever writes generic TODO-marked placeholders.`);
 }
 
 async function askDefault(rl, question, def) {
@@ -141,6 +163,9 @@ function runScan(argv) {
   );
   console.log(`CI: ${result.ci.present ? `detected (${result.ci.signals.join(', ')})` : 'none detected'}`);
   console.log(`CODEOWNERS: ${result.codeowners ? 'present' : 'not found'}`);
+  console.log(
+    `Substantial code: ${result.code.hasSubstantialCode ? 'yes' : 'no'} (${result.code.fileCount} source file(s), ~${result.code.lineCount} lines)`
+  );
 }
 
 async function runInstall(args, { forceDryRun = false, requireExisting = false, silentInteractive = false } = {}) {
@@ -353,6 +378,39 @@ async function runUninstall(argv) {
   }
 }
 
+function runScaffoldPrinciples(argv) {
+  let target = process.cwd();
+  let force = false;
+  for (const raw of argv) {
+    if (raw.startsWith('--target=')) target = raw.slice('--target='.length);
+    else if (raw === '--force') force = true;
+    else if (raw === '--help' || raw === '-h') {
+      printScaffoldPrinciplesHelp();
+      return;
+    } else {
+      console.error(`Unrecognized argument: ${raw}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  const root = path.resolve(target);
+  const scanResult = scanLib.scan(root);
+  if (scanResult.code.hasSubstantialCode) {
+    console.log(
+      `Note: this repo already has substantial code (${scanResult.code.fileCount} source file(s), ~${scanResult.code.lineCount} lines).`
+    );
+    console.log('Consider running the "principles" agent instead so principles/*.md reflect what this repo actually does, rather than placeholders.\n');
+  }
+
+  const result = principlesLib.scaffold(root, GLOBAL_DIR, { force });
+  console.log(`Principles scaffold at ${path.join(root, 'principles')}`);
+  console.log(`  created: ${result.created.length ? result.created.join(', ') : '(none)'}`);
+  if (result.skipped.length) {
+    console.log(`  skipped (already exist, use --force to overwrite): ${result.skipped.join(', ')}`);
+  }
+}
+
 async function main() {
   const rawArgv = process.argv.slice(2);
   const sub = rawArgv[0];
@@ -367,6 +425,10 @@ async function main() {
   }
   if (sub === 'uninstall') {
     await runUninstall(rawArgv.slice(1));
+    return;
+  }
+  if (sub === 'scaffold-principles') {
+    runScaffoldPrinciples(rawArgv.slice(1));
     return;
   }
 

@@ -23,9 +23,52 @@ test('scan: empty repo reports nothing detected', (t) => {
   assert.equal(result.ci.present, false);
   assert.equal(result.codeowners, false);
   assert.equal(result.toolkit.manifest, null);
+  assert.equal(result.code.hasSubstantialCode, false);
+  assert.equal(result.code.fileCount, 0);
   for (const tool of Object.keys(result.toolkit.installed)) {
     assert.equal(result.toolkit.installed[tool].present, false);
   }
+});
+
+test('scan: a handful of small source files is not "substantial"', (t) => {
+  const dir = makeFixture();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  fs.writeFileSync(path.join(dir, 'index.js'), 'console.log("hi");\n');
+  fs.writeFileSync(path.join(dir, 'util.js'), 'module.exports = {};\n');
+
+  const result = scan(dir);
+  assert.equal(result.code.hasSubstantialCode, false);
+  assert.equal(result.code.fileCount, 2);
+});
+
+test('scan: enough source files and lines counts as substantial', (t) => {
+  const dir = makeFixture();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const line = 'const x = 1;\n';
+  for (const name of ['a.js', 'b.js', 'c.js', 'd.js']) {
+    fs.writeFileSync(path.join(dir, name), line.repeat(60));
+  }
+
+  const result = scan(dir);
+  assert.equal(result.code.hasSubstantialCode, true);
+  assert.equal(result.code.fileCount, 4);
+  assert.ok(result.code.lineCount >= 150);
+});
+
+test('scan: excludes node_modules and dotdirs from the code count', (t) => {
+  const dir = makeFixture();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  fs.mkdirSync(path.join(dir, 'node_modules', 'some-pkg'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'node_modules', 'some-pkg', 'index.js'), 'x'.repeat(5000));
+  fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.git', 'huge.js'), 'x'.repeat(5000));
+
+  const result = scan(dir);
+  assert.equal(result.code.fileCount, 0);
+  assert.equal(result.code.hasSubstantialCode, false);
 });
 
 test('scan: detects node stack via package.json test script', (t) => {

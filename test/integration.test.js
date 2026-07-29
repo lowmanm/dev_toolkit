@@ -42,6 +42,8 @@ test('full lifecycle: install -> no-op update -> conflict detection -> status ->
   assert.ok(fs.existsSync(path.join(dir, '.github', 'agents', 'dev.agent.md')));
   assert.ok(fs.existsSync(path.join(dir, '.claude', 'agents', 'dev.md')));
   assert.ok(fs.existsSync(path.join(dir, '.gemini', 'agents', 'dev.md')));
+  assert.ok(fs.existsSync(path.join(dir, '.claude', 'agents', 'principles.md')), 'principles agent should install by default');
+  assert.ok(fs.existsSync(path.join(dir, '.claude', 'skills', 'principles-maintenance', 'SKILL.md')));
   assert.ok(fs.existsSync(path.join(dir, 'CLAUDE.md')));
   assert.ok(fs.existsSync(path.join(dir, 'GEMINI.md')));
   assert.ok(fs.existsSync(path.join(dir, '.devtoolkit', 'manifest.json')));
@@ -89,6 +91,50 @@ test('scan --json reports an empty repo accurately', (t) => {
   const parsed = JSON.parse(result.stdout);
   assert.deepEqual(parsed.stacks, []);
   assert.equal(parsed.toolkit.manifest, null);
+});
+
+test('scaffold-principles: writes placeholders and never clobbers by default', (t) => {
+  const dir = tmpDir(t);
+
+  const first = run(['scaffold-principles'], dir);
+  assert.equal(first.status, 0);
+  assert.match(first.stdout, /created: architecture\.md, design\.md, domain\.md/);
+  assert.ok(fs.existsSync(path.join(dir, 'principles', 'architecture.md')));
+  assert.equal(fs.existsSync(path.join(dir, '.devtoolkit')), false, 'principles should not create a manifest');
+
+  fs.writeFileSync(path.join(dir, 'principles', 'architecture.md'), 'real content, not a placeholder');
+
+  const second = run(['scaffold-principles'], dir);
+  assert.equal(second.status, 0);
+  assert.match(second.stdout, /skipped \(already exist/);
+  assert.equal(fs.readFileSync(path.join(dir, 'principles', 'architecture.md'), 'utf8'), 'real content, not a placeholder');
+
+  const forced = run(['scaffold-principles', '--force'], dir);
+  assert.equal(forced.status, 0);
+  assert.match(fs.readFileSync(path.join(dir, 'principles', 'architecture.md'), 'utf8'), /Placeholder/);
+});
+
+test('scaffold-principles: nudges toward the principles agent when there is already substantial code', (t) => {
+  const dir = tmpDir(t);
+  const line = 'const x = 1;\n';
+  for (const name of ['a.js', 'b.js', 'c.js', 'd.js']) {
+    fs.writeFileSync(path.join(dir, name), line.repeat(60));
+  }
+
+  const result = run(['scaffold-principles'], dir);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /already has substantial code/);
+  assert.match(result.stdout, /principles" agent instead/);
+});
+
+test('uninstall never touches principles/ - it is not manifest-tracked', (t) => {
+  const dir = tmpDir(t);
+  run(['--yes'], dir);
+  run(['scaffold-principles'], dir);
+
+  const uninstall = run(['uninstall', '--yes'], dir);
+  assert.equal(uninstall.status, 0);
+  assert.ok(fs.existsSync(path.join(dir, 'principles', 'architecture.md')), 'principles/ should survive uninstall untouched');
 });
 
 test('selective install: only requested tool/agent/skill are written', (t) => {

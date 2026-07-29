@@ -21,6 +21,10 @@ Apply these checks to every review. Call out which findings are **blocking** (mu
 - Any secrets, credentials, or tokens committed?
 - Any new external input trusted without validation at a system boundary?
 
+## Principles currency (blocking, if `principles/` exists in this repo)
+- If this PR changes architecture, a design convention, or the business domain model, does it also update the matching `principles/architecture.md`, `principles/design.md`, or `principles/domain.md`? Treat a missing update as blocking, the same as a missing test for new behavior.
+- See the `principles-maintenance` skill for what belongs in each file.
+
 ## Scope and design (non-blocking unless egregious)
 - Is the change scoped to what was asked, or does it carry unrelated refactors?
 - Are new abstractions justified by actual current need, or speculative?

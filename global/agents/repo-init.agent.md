@@ -23,9 +23,18 @@ If `toolkit.manifest` is present in the scan output, this is an **update**, not 
 3. **CI / review process signals.** Use `ci.present` and `codeowners` from the scan. These don't change what you install, but note them in your summary since they're relevant to the `sdlc-request-review` skill.
 4. **Repo type/stack.** Use `stacks` from the scan — enough to sanity-check that `dev-scaffolding` and `dev-environment-setup` content will be useful, not to gate installation on it. These two skills apply to essentially every repo regardless of stack.
 
+## Step 3: bootstrap principles
+
+Check whether `principles/` already exists in the repo (walk it, or check the scan's file listing). If it doesn't:
+
+- If `code.hasSubstantialCode` from the scan is `true`, invoke the `principles` agent — it'll read the actual codebase and derive real `architecture.md`/`design.md`/`domain.md` content.
+- If `code.hasSubstantialCode` is `false`, run `bin/toolkit scaffold-principles --target <this-repo>` instead — there isn't enough code yet to derive anything real from, so this writes TODO-marked placeholders.
+
+Either way, mention in your summary which path was taken and why. If `principles/` already exists, leave it alone — that's the `principles` agent's job to refresh deliberately, not something to touch on every `repo-init` run.
+
 ## What's in scope to recommend (v1)
 
-Only the four v1 skill areas: `dev` (scaffolding + environment setup), `pr-review`, `testing` (unit + integration), `sdlc` (process placeholders). Do not recommend or reference security, SRE, architecture, or PM/Jira/Confluence tooling — none of that exists in this toolkit yet, and inventing recommendations for it would be worse than saying nothing.
+Only the four v1 skill areas: `dev` (scaffolding + environment setup), `pr-review`, `testing` (unit + integration), `sdlc` (process placeholders) — plus the `principles` mechanism above, which is cross-cutting rather than a fifth skill area. Do not recommend or reference security, SRE, architecture (as an org-wide governance area — not to be confused with `principles/architecture.md`, which documents this repo's own system design), or PM/Jira/Confluence tooling — none of that exists in this toolkit yet, and inventing recommendations for it would be worse than saying nothing.
 
 ## What you do with the decision
 

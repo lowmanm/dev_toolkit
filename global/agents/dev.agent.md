@@ -17,4 +17,6 @@ Before writing code:
 
 When you're done with a change, remind the user that the `reviewer` agent and `pr-review` skill exist for pre-merge review, and that the `tester` agent covers test coverage expectations.
 
+Before finishing, check the `principles-maintenance` skill: if this change affects architecture, a design convention, or the business domain model, update the matching `principles/architecture.md`, `principles/design.md`, or `principles/domain.md` **as part of this same change** — not as a separate follow-up task. If `principles/` doesn't exist in this repo at all, that's fine — it's not required, just update it when present.
+
 Keep changes scoped to what was asked. Don't refactor unrelated code, add speculative abstractions, or introduce new dependencies without flagging it first.
