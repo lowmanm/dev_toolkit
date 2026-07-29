@@ -9,6 +9,8 @@ const readline = require('readline');
 const manifestLib = require('../lib/manifest');
 const source = require('../lib/source');
 const scanLib = require('../lib/scan');
+const cli = require('../lib/cli');
+const installLib = require('../lib/install');
 const writers = {
   copilot: require('../lib/writers/copilot'),
   claude: require('../lib/writers/claude'),
@@ -24,8 +26,10 @@ function printHelp() {
   console.log(`toolkit - install or update the org dev toolkit
 
 Usage:
-  bin/toolkit [options]
-  bin/toolkit scan [--target=<path>] [--json]
+  bin/toolkit [options]                          install or update
+  bin/toolkit status [--scope=] [--target=]       show current install state without changing anything
+  bin/toolkit scan [--target=] [--json]           inspect a repo without installing anything
+  bin/toolkit uninstall [--scope=] [--target=]    remove a previous install
 
 Options:
   --scope=user|workspace   Where to install. user = this PC (~/.copilot, ~/.claude, ~/.gemini),
@@ -34,18 +38,15 @@ Options:
   --tools=a,b,c            Target CLIs to generate for (default: ${ALL_TOOLS.join(',')}).
   --agents=a,b,c           Agents to install (default: all).
   --skills=a,b,c           Skills to install (default: all).
+  --dry-run                Show what would change without writing anything.
   --yes, -y                Non-interactive: use flags/defaults, skip prompts.
   --help, -h               Show this help.
 
 Re-running with no flags updates an existing install in place, reusing its
 prior selection. Files you've hand-edited locally are detected via checksum
-and left untouched (with a warning) rather than being overwritten. If the
-org source for that same file also changed upstream, it's reported as a
-conflict needing a manual merge rather than a plain preserved edit.
-
-"scan" inspects a repo (stack, test tooling, CI, existing toolkit installs)
-without writing anything. It's what the repo-init agent shells out to
-instead of re-deriving repo state via ad hoc search each run.`);
+and left untouched. If the org source for that same file also changed
+upstream, it's reported as a conflict needing a manual merge rather than a
+plain preserved edit.`);
 }
 
 function printScanHelp() {
@@ -59,31 +60,34 @@ Options:
   --json            Print raw JSON instead of a human-readable summary.`);
 }
 
-function parseArgs(argv) {
-  const args = { tools: null, agents: null, skills: null, scope: null, target: null, yes: false, help: false };
-  for (const raw of argv) {
-    if (raw === '--help' || raw === '-h') args.help = true;
-    else if (raw === '--yes' || raw === '-y') args.yes = true;
-    else if (raw.startsWith('--scope=')) args.scope = raw.slice('--scope='.length);
-    else if (raw.startsWith('--target=')) args.target = raw.slice('--target='.length);
-    else if (raw.startsWith('--tools=')) args.tools = splitList(raw.slice('--tools='.length));
-    else if (raw.startsWith('--agents=')) args.agents = splitList(raw.slice('--agents='.length));
-    else if (raw.startsWith('--skills=')) args.skills = splitList(raw.slice('--skills='.length));
-    else {
-      console.error(`Unrecognized argument: ${raw}`);
-      process.exit(1);
-    }
-  }
-  return args;
+function printStatusHelp() {
+  console.log(`toolkit status - show current install state without changing anything
+
+Usage:
+  bin/toolkit status [--scope=user|workspace] [--target=<path>]
+
+Runs the same comparison an update would (including conflict detection)
+but never writes anything. Errors if nothing is installed at that scope/target.`);
 }
 
-function splitList(s) {
-  return s.split(',').map((x) => x.trim()).filter(Boolean);
+function printUninstallHelp() {
+  console.log(`toolkit uninstall - remove a previous install
+
+Usage:
+  bin/toolkit uninstall [--scope=user|workspace] [--target=<path>] [--yes]
+
+Deletes only files that still match what the toolkit last generated. Files
+you've hand-edited locally are left in place and reported, not deleted.
+Always removes the install manifest itself at the end.`);
 }
 
 async function askDefault(rl, question, def) {
   const answer = (await rl.question(`${question} [${def}]: `)).trim();
   return answer || def;
+}
+
+function resolveRoot(scope, target) {
+  return scope === 'user' ? os.homedir() : path.resolve(target || process.cwd());
 }
 
 function runScan(argv) {
@@ -139,60 +143,12 @@ function runScan(argv) {
   console.log(`CODEOWNERS: ${result.codeowners ? 'present' : 'not found'}`);
 }
 
-// Writes `content` to `filePath`, respecting manifest-recorded checksums so a
-// locally hand-edited file is never silently clobbered. Distinguishes a
-// harmless local edit (source unchanged upstream) from a real conflict
-// (local edit AND the org source moved), so updates never silently drop
-// either side.
-function writeTracked(filePath, content, sourceHash, manifestFiles, previousManifestFiles, report) {
-  const outputHash = manifestLib.sha256(content);
-  const prior = previousManifestFiles && previousManifestFiles[filePath];
-  const existsOnDisk = fs.existsSync(filePath);
-
-  if (existsOnDisk) {
-    const onDisk = fs.readFileSync(filePath, 'utf8');
-    const onDiskHash = manifestLib.sha256(onDisk);
-    if (prior && onDiskHash !== prior.outputHash) {
-      const sourceChanged = prior.sourceHash !== sourceHash;
-      report[sourceChanged ? 'conflicts' : 'localEditsPreserved'].push(filePath);
-      manifestFiles[filePath] = prior; // keep tracking the last-known-synced state
-      return;
-    }
-    if (!prior) {
-      // File exists but the toolkit never wrote it (foreign file) — don't overwrite.
-      report.skippedForeign.push(filePath);
-      return;
-    }
-    if (onDiskHash === outputHash) {
-      manifestFiles[filePath] = { outputHash, sourceHash };
-      return; // already up to date
-    }
-  }
-
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, content);
-  manifestFiles[filePath] = { outputHash, sourceHash };
-  report[existsOnDisk ? 'updated' : 'created'].push(filePath);
-}
-
-async function main() {
-  const rawArgv = process.argv.slice(2);
-  if (rawArgv[0] === 'scan') {
-    runScan(rawArgv.slice(1));
-    return;
-  }
-
-  const args = parseArgs(rawArgv);
-  if (args.help) {
-    printHelp();
-    return;
-  }
-
+async function runInstall(args, { forceDryRun = false, requireExisting = false, silentInteractive = false } = {}) {
   const agentsSource = source.loadAgents(GLOBAL_DIR);
   const skillsSource = source.loadSkills(GLOBAL_DIR);
   const instructionsBody = source.loadInstructions(GLOBAL_DIR);
 
-  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY) && !args.yes;
+  const interactive = !silentInteractive && Boolean(process.stdin.isTTY && process.stdout.isTTY) && !args.yes;
   const rl = interactive ? readline.createInterface({ input: process.stdin, output: process.stdout }) : null;
 
   let scope = args.scope;
@@ -212,9 +168,16 @@ async function main() {
     return;
   }
 
-  const root = scope === 'user' ? os.homedir() : path.resolve(args.target || process.cwd());
+  const root = resolveRoot(scope, args.target);
   const previousManifest = manifestLib.load(root);
   const mode = previousManifest ? 'update' : 'install';
+
+  if (requireExisting && !previousManifest) {
+    console.error(`No toolkit install found at ${root} (${scope} scope). Run "bin/toolkit" first.`);
+    process.exitCode = 1;
+    if (rl) rl.close();
+    return;
+  }
 
   const defaults = {
     tools: (previousManifest && previousManifest.selection.tools) || ALL_TOOLS,
@@ -227,11 +190,11 @@ async function main() {
   let skillIds = args.skills || defaults.skills;
 
   if (interactive && mode === 'install' && !args.tools && !args.agents && !args.skills) {
-    tools = splitList(await askDefault(rl, `Target CLIs (${ALL_TOOLS.join(',')})`, tools.join(',')));
-    agentIds = splitList(
+    tools = cli.splitList(await askDefault(rl, `Target CLIs (${ALL_TOOLS.join(',')})`, tools.join(',')));
+    agentIds = cli.splitList(
       await askDefault(rl, `Agents (${agentsSource.map((a) => a.id).join(',')})`, agentIds.join(','))
     );
-    skillIds = splitList(
+    skillIds = cli.splitList(
       await askDefault(rl, `Skills (${skillsSource.map((s) => s.id).join(',')})`, skillIds.join(','))
     );
   }
@@ -248,7 +211,8 @@ async function main() {
   const selectedAgents = agentsSource.filter((a) => agentIds.includes(a.id));
   const selectedSkills = skillsSource.filter((s) => skillIds.includes(s.id));
 
-  const report = { created: [], updated: [], conflicts: [], localEditsPreserved: [], skippedForeign: [] };
+  const dryRun = forceDryRun || args.dryRun;
+  const report = installLib.makeReport();
   const manifestFiles = {};
   const previousFiles = previousManifest ? previousManifest.files : {};
   const instructionsSourceHash = manifestLib.sha256(instructionsBody);
@@ -258,28 +222,34 @@ async function main() {
 
     for (const agent of selectedAgents) {
       const filePath = writer.agentPath(root, scope, agent.id);
-      writeTracked(filePath, writer.renderAgent(agent), manifestLib.sha256(agent.raw), manifestFiles, previousFiles, report);
+      installLib.writeTracked(filePath, writer.renderAgent(agent), manifestLib.sha256(agent.raw), manifestFiles, previousFiles, report, { dryRun });
     }
 
     for (const skill of selectedSkills) {
       const filePath = writer.skillPath(root, scope, skill.id);
-      writeTracked(filePath, writer.renderSkill(skill), manifestLib.sha256(skill.raw), manifestFiles, previousFiles, report);
+      installLib.writeTracked(filePath, writer.renderSkill(skill), manifestLib.sha256(skill.raw), manifestFiles, previousFiles, report, { dryRun });
     }
 
     const instrPath = writer.instructionsPath(root, scope);
-    writeTracked(instrPath, writer.renderInstructions(instructionsBody), instructionsSourceHash, manifestFiles, previousFiles, report);
+    installLib.writeTracked(instrPath, writer.renderInstructions(instructionsBody), instructionsSourceHash, manifestFiles, previousFiles, report, { dryRun });
   }
 
-  manifestLib.save(root, {
-    toolkitVersion: TOOLKIT_VERSION,
-    scope,
-    installedAt: (previousManifest && previousManifest.installedAt) || new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    selection: { tools, agents: agentIds, skills: skillIds },
-    files: manifestFiles,
-  });
+  if (!dryRun) {
+    manifestLib.save(root, {
+      toolkitVersion: TOOLKIT_VERSION,
+      scope,
+      installedAt: (previousManifest && previousManifest.installedAt) || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      selection: { tools, agents: agentIds, skills: skillIds },
+      files: manifestFiles,
+    });
+  }
 
-  console.log(`\n${mode === 'install' ? 'Installed' : 'Updated'} dev_toolkit v${TOOLKIT_VERSION} (${scope} scope) at ${root}`);
+  const verbPast = mode === 'install' ? 'Installed' : 'Updated';
+  const verbInfinitive = mode === 'install' ? 'install' : 'update';
+  const headline = dryRun ? `[dry run] Would ${verbInfinitive}` : verbPast;
+
+  console.log(`\n${headline} dev_toolkit v${TOOLKIT_VERSION} (${scope} scope) at ${root}`);
   console.log(`  tools:  ${tools.join(', ')}`);
   console.log(`  agents: ${agentIds.join(', ')}`);
   console.log(`  skills: ${skillIds.join(', ')}`);
@@ -296,6 +266,123 @@ async function main() {
     console.log(`\nSkipped ${report.skippedForeign.length} pre-existing file(s) not managed by this toolkit:`);
     for (const f of report.skippedForeign) console.log(`  - ${f}`);
   }
+}
+
+async function runStatus(argv) {
+  let scope = null;
+  let target = null;
+  for (const raw of argv) {
+    if (raw.startsWith('--scope=')) scope = raw.slice('--scope='.length);
+    else if (raw.startsWith('--target=')) target = raw.slice('--target='.length);
+    else if (raw === '--help' || raw === '-h') {
+      printStatusHelp();
+      return;
+    } else {
+      console.error(`Unrecognized argument: ${raw}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  const args = { tools: null, agents: null, skills: null, scope: scope || 'workspace', target, yes: true, help: false, dryRun: true };
+  await runInstall(args, { forceDryRun: true, requireExisting: true, silentInteractive: true });
+}
+
+async function runUninstall(argv) {
+  let scope = null;
+  let target = null;
+  let yes = false;
+  for (const raw of argv) {
+    if (raw.startsWith('--scope=')) scope = raw.slice('--scope='.length);
+    else if (raw.startsWith('--target=')) target = raw.slice('--target='.length);
+    else if (raw === '--yes' || raw === '-y') yes = true;
+    else if (raw === '--help' || raw === '-h') {
+      printUninstallHelp();
+      return;
+    } else {
+      console.error(`Unrecognized argument: ${raw}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  scope = scope || 'workspace';
+  if (scope !== 'user' && scope !== 'workspace') {
+    console.error(`Unknown scope "${scope}". Expected "user" or "workspace".`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const root = resolveRoot(scope, target);
+  const manifest = manifestLib.load(root);
+  if (!manifest) {
+    console.log(`No toolkit install found at ${root} (${scope} scope). Nothing to do.`);
+    return;
+  }
+
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY) && !yes;
+  if (interactive) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = (await rl.question(`Remove dev_toolkit (${scope} scope) from ${root}? [y/N]: `)).trim().toLowerCase();
+    rl.close();
+    if (answer !== 'y' && answer !== 'yes') {
+      console.log('Aborted.');
+      return;
+    }
+  }
+
+  const removed = [];
+  const preserved = [];
+  for (const [filePath, entry] of Object.entries(manifest.files)) {
+    if (!fs.existsSync(filePath)) continue;
+    const onDiskHash = manifestLib.sha256(fs.readFileSync(filePath, 'utf8'));
+    if (onDiskHash === entry.outputHash) {
+      fs.unlinkSync(filePath);
+      removed.push(filePath);
+      installLib.pruneEmptyDirs(path.dirname(filePath), root);
+    } else {
+      preserved.push(filePath);
+    }
+  }
+
+  fs.rmSync(path.dirname(manifestLib.manifestPath(root)), { recursive: true, force: true });
+
+  console.log(`\nRemoved dev_toolkit (${scope} scope) from ${root}`);
+  console.log(`  deleted: ${removed.length}`);
+  if (preserved.length) {
+    console.log(`\n${preserved.length} file(s) left in place (locally edited, not toolkit-original):`);
+    for (const f of preserved) console.log(`  - ${f}`);
+  }
+}
+
+async function main() {
+  const rawArgv = process.argv.slice(2);
+  const sub = rawArgv[0];
+
+  if (sub === 'scan') {
+    runScan(rawArgv.slice(1));
+    return;
+  }
+  if (sub === 'status') {
+    await runStatus(rawArgv.slice(1));
+    return;
+  }
+  if (sub === 'uninstall') {
+    await runUninstall(rawArgv.slice(1));
+    return;
+  }
+
+  let args;
+  try {
+    args = cli.parseArgs(rawArgv);
+  } catch (err) {
+    console.error(err.message);
+    process.exitCode = 1;
+    return;
+  }
+  if (args.help) {
+    printHelp();
+    return;
+  }
+  await runInstall(args);
 }
 
 main().catch((err) => {

@@ -16,7 +16,18 @@ bin/toolkit --tools=claude --agents=dev,reviewer --skills=pr-review
 
 Re-running with no flags updates an existing install in place, reusing its prior selection. A checksum is recorded per generated file, tracked against both the rendered output and the org source it came from — if you've hand-edited a file locally, the next update leaves it alone. If the org source for that same file *also* changed upstream, it's reported as a conflict needing a manual merge rather than a plain preserved edit, so you're not stuck comparing hashes by hand to tell the two apart.
 
-Requires Node.js (no npm install needed — `bin/toolkit` has zero dependencies).
+Requires Node.js (no npm install needed to run it — `bin/toolkit` has zero runtime dependencies; `npm install` is only needed if you want to run this repo's own test suite).
+
+## Other commands
+
+```
+bin/toolkit status                   # what's installed here, including any conflicts - never writes anything
+bin/toolkit --dry-run                # preview an install/update without writing anything
+bin/toolkit uninstall                # remove a previous install; leaves hand-edited files in place, deletes the rest
+bin/toolkit uninstall --yes          # skip the confirmation prompt
+```
+
+`uninstall` only deletes files that still match what the toolkit last generated — anything you've hand-edited is left on disk and reported, not deleted. The install manifest itself is always removed, so a later `bin/toolkit` run there is treated as a fresh install.
 
 ## Inspecting a repo without installing
 
@@ -36,10 +47,13 @@ global/                 neutral source content — org-owned, edit here
   instructions/core.md   baseline instructions assembled into copilot-instructions.md / CLAUDE.md / GEMINI.md
 lib/                     bin/toolkit's implementation
   writers/{copilot,claude,gemini}.js   per-target adapters (path + frontmatter mapping)
-  manifest.js, source.js, scan.js
-bin/toolkit              the install/update entrypoint
+  manifest.js, source.js, scan.js, install.js, cli.js
+bin/toolkit              the install/update/scan/status/uninstall entrypoint
+test/                    node:test suite (unit tests per lib/ module + end-to-end CLI tests)
+.github/workflows/ci.yml CI: syntax check + test suite on push/PR
 user/                    personal scratch/override space for people developing this repo (see user/README.md)
 manifest.json, VERSION   this toolkit's own version/contents metadata
+package.json             only for the "test" script and engines.node — bin/toolkit itself has no npm dependencies
 ```
 
 Installed output is generated, not hand-authored — edit `global/`, not the files `bin/toolkit` writes into a target repo or home directory.
