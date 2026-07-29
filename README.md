@@ -4,101 +4,110 @@ The org's internal dev toolkit: agents, skills, and instructions for **developme
 
 ## Quick start
 
-### Option A: run it directly, no local clone to manage
+There are two ways to run it — a one-off run with no local clone, or a local clone you keep around and re-run.
 
+**Option A — run directly, no local clone to manage:**
 ```
 npx github:<org>/dev_toolkit
 ```
 
-(replace `<org>/dev_toolkit` with wherever this repo actually lives). `npx` fetches it and runs `bin/toolkit` on the spot — nothing persists locally afterward. It still needs `git` access to that repo under the hood (same permissions a manual clone would need), it just skips you having to manage a local copy or remember to `git pull` before re-running.
+(replace `<org>/dev_toolkit` with wherever this repo actually lives). `npx` fetches it and runs `bin/toolkit` on the spot — nothing persists locally afterward. It still needs `git` access to that repo under the hood (same permissions a manual clone would need), it just skips you having to manage a local copy or remember to `git pull` before re-running. Flags append the same way:
 
-Flags work the same way, appended after the package reference:
-
+**Option A with flags:**
 ```
 npx github:<org>/dev_toolkit --scope=workspace --yes
 ```
 
-### Option B: clone it locally
-
-Useful if you want to inspect the source, or `npx` fetching from git isn't available on your network:
-
+**Option B — clone it locally** (useful if you want to inspect the source, or `npx` fetching from git isn't available on your network):
 ```
 git clone <repo-url>
 cd dev_toolkit
 ./bin/toolkit
 ```
 
-Either way, running it with no flags asks you two things: scope (this PC vs. just this project) and which agents/skills/CLIs to include, defaulting to all. Answer the prompts, or use the non-interactive commands below.
+Either way, running it with no flags asks you two things: scope (this PC vs. just this project) and which agents/skills/CLIs to include, defaulting to all. Answer the prompts, or use the non-interactive commands in the rest of this README.
 
 > Requires Node.js. No `npm install` needed — `bin/toolkit` runs as-is (zero runtime dependencies, which is also what makes the `npx` option above work without an install step). On Windows with a local clone, use `node bin/toolkit` instead of `./bin/toolkit`.
 
 The rest of this README shows commands as `./bin/toolkit ...` for brevity — swap in `npx github:<org>/dev_toolkit ...` if you're using Option A instead of a local clone.
 
-## Installing into your current project
+## Scopes
 
-This is **workspace scope** — writes into the current project's `.github/`, `.claude/`, `.gemini/`, committed to git and shared with your team:
+Scope controls *where* content is written — the same agents/skills/instructions get generated either way, just to a different location:
 
+| Scope | Writes to | Committed to git? | Use when |
+|---|---|---|---|
+| **workspace** | The current project (`.github/`, `.claude/`, `.gemini/` at the repo root) | Yes — shared with your team | You want this available to everyone working in this specific project |
+| **user** | Your home directory (`~/.copilot/`, `~/.claude/`, `~/.gemini/`) | No — never committed anywhere | You want this available to yourself in every project on this machine |
+
+**Workspace scope:**
 ```
 ./bin/toolkit --scope=workspace --yes
 ```
 
-## Installing for yourself, across every project
-
-This is **user scope** — writes into your home directory (`~/.copilot/`, `~/.claude/`, `~/.gemini/`), available in every project you open on this machine, never committed anywhere:
-
+**User scope:**
 ```
 ./bin/toolkit --scope=user --yes
 ```
 
-## Installing only part of it
+## Selecting what to install
 
-Pick specific target CLIs, agents, or skills instead of everything:
+By default every target CLI, agent, and skill is installed. Pick specific ones instead with `--tools`, `--agents`, and `--skills`:
 
+**Custom selection:**
 ```
 ./bin/toolkit --scope=workspace --tools=claude --agents=dev,reviewer --skills=pr-review --yes
 ```
 
 ## Updating
 
-Re-run the exact same command you installed with — it detects the existing install and updates in place, reusing your prior selection:
+Re-run the exact same command you installed with — it detects the existing install and updates in place, reusing your prior selection. If you've hand-edited a generated file, an update leaves it alone rather than overwriting it. If the org content for that same file *also* changed since your edit, that's called out explicitly as a conflict to merge by hand — you'll never lose an edit silently, and you'll never miss an upstream change silently either.
 
+**Update:**
 ```
 ./bin/toolkit
 ```
 
-If you've hand-edited a generated file, an update leaves it alone rather than overwriting it. If the org content for that same file *also* changed since your edit, that's called out explicitly as a conflict to merge by hand — you'll never lose an edit silently, and you'll never miss an upstream change silently either.
-
 ## Checking status without changing anything
 
+Shows what's installed and flags any conflicts, without writing anything.
+
+**Status:**
 ```
 ./bin/toolkit status
 ```
 
-Shows what's installed and flags any conflicts, without writing anything.
-
 ## Previewing an install or update
 
+Add `--dry-run` to any install/update command to see what would happen without touching disk.
+
+**Preview:**
 ```
 ./bin/toolkit --dry-run
 ```
 
-Add `--dry-run` to any install/update command to see what would happen without touching disk.
-
 ## Removing the toolkit
 
+Deletes only the files that still match what the toolkit generated. Anything you've hand-edited locally is left in place and reported, not deleted.
+
+**Uninstall:**
 ```
 ./bin/toolkit uninstall
 ```
 
-Deletes only the files that still match what the toolkit generated. Anything you've hand-edited locally is left in place and reported, not deleted. Add `--yes` to skip the confirmation prompt.
+**Uninstall without a confirmation prompt:**
+```
+./bin/toolkit uninstall --yes
+```
 
 ## Inspecting a repo before installing
 
+Reports the repo's detected stack, test tooling, CI, and any existing toolkit install — without installing anything. Useful before deciding what to install, or just to see what's there.
+
+**Scan:**
 ```
 ./bin/toolkit scan
 ```
-
-Reports the repo's detected stack, test tooling, CI, and any existing toolkit install — without installing anything. Useful before deciding what to install, or just to see what's there.
 
 ## Bootstrapping a brand-new repo
 
